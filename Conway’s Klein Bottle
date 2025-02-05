@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Game of Life on a Klein Bottle (2x2px Cells with Depth Transparency)</title>
+  <style>
+    /* Full-window canvas with a dark background */
+    body {
+      margin: 0;
+      overflow: hidden;
+      background: #000;
+    }
+    canvas {
+      display: block;
+    }
+  </style>
+</head>
+<body>
+  <!-- Include Three.js from a CDN -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r134/three.min.js"></script>
+  <script>
+    /********************************************************************
+     * SIMULATION SETUP
+     *
+     * We use a grid of 400×200 cells; each cell is drawn as a 2×2 pixel square.
+     * This yields an off‑screen canvas of 800×400 pixels that serves as the evolving
+     * Game of Life “texture.”
+     ********************************************************************/
+    const gridWidth = 400;
+    const gridHeight = 200;
+    const cellSize = 2; // Each cell is 2×2 pixels
+    const canvasWidth = gridWidth * cellSize;   // 800 pixels
+    const canvasHeight = gridHeight * cellSize; // 400 pixels
+
+    // Create an off‑screen canvas for the simulation texture.
+    const simCanvas = document.createElement("canvas");
+    simCanvas.width = canvasWidth;
+    simCanvas.height = canvasHeight;
+    const simCtx = simCanvas.getContext("2d");
+
+    // Define a neon synthwave–inspired palette.
+    const palette = [
+      "#FF007F", // neon pink
+      "#08F7FE", // bright cyan
+      "#9D00FF", // vivid purple
+      "#FFEA00", // neon yellow
+      "#FF00FF"  // magenta
+    ];
+
+    // Utility: Convert a hex color (e.g. "#FF007F") to an {r, g, b} object.
+    function hexToRgb(hex) {
+      hex = hex.replace(/^#/, "");
+      if (hex.length === 3) {
+        hex = hex.split("").map(c => c + c).join("");
+      }
+      const bigint = parseInt(hex, 16);
+      const r = (bigint >> 16) & 255;
+      const g = (bigint >> 8) & 255;
+      const b = bigint & 255;
+      return { r, g, b };
+    }
+
+    // Create two grids for Conway’s Game of Life.
+    let grid = [];
+    let nextGrid = [];
+
+    function initGrid() {
+      for (let r = 0; r < gridHeight; r++) {
+        grid[r] = [];
+        nextGrid[r] = [];
+        for (let c = 0; c < gridWidth; c++) {
+          // Approximately 20% of the cells start "alive" (with a random color).
+          grid[r][c] = (Math.random() < 0.2)
+            ? palette[Math.floor(Math.random() * palette.length)]
+            : null;
+          nextGrid[r][c] = null;
+        }
+      }
+    }
+    initGrid();
+
+    // Update the simulation using Conway’s Game of Life rules (with toroidal wrapping).
+    function updateSimulation() {
+      for (let r = 0; r < gridHeight; r++) {
+        for (let c = 0; c < gridWidth; c++) {
+          let neighbors = 0;
+          for (let dr = -1; dr <= 1; dr++) {
+            for (let dc = -1; dc <= 1; dc++) {
+              if (dr === 0 && dc === 0) continue;
+              const nr = (r + dr + gridHeight) % gridHeight;
+              const nc = (c + dc + gridWidth) % gridWidth;
+              if (grid[nr][nc] !== null) neighbors++;
+            }
+          }
+          if (grid[r][c] !== null) {
+            // Live cell survives if it has 2 or 3 neighbors.
+            nextGrid[r][c] = (neighbors === 2 || neighbors === 3) ? grid[r][c] : null;
+          } else {
+            // Dead cell becomes alive if exactly 3 neighbors.
+            nextGrid[r][c] = (neighbors === 3)
+              ? palette[Math.floor(Math.random() * palette.length)]
+              : null;
+          }
+        }
+      }
+      // Swap the grids.
+      [grid, nextGrid] = [nextGrid, grid];
+    }
+
+    /********************************************************************
+     * PARAMETRIC KLEIN BOTTLE GEOMETRY
+     *
+     * We define a parametric function for a Klein bottle.
+     * This version is adapted from common Three.js examples.
+     * The parameters (u,v) are in [0,1] and are scaled internally.
+     ********************************************************************/
+    function klein(u, v, target) {
+      // Scale u and v to the ranges used in this parameterization.
+      u *= Math.PI;          // u ∈ [0, π]
+      v *= 2 * Math.PI;      // v ∈ [0, 2π]
+      u *= 2;                // Now u ∈ [0, 2π]
+      if (u < Math.PI) {
+        target.x = 3 * Math.cos(u) * (1 + Math.sin(u)) + (2 * (1 - Math.cos(u) / 2)) * Math.cos(u) * Math.cos(v);
+        target.y = 8 * Math.sin(u) + (2 * (1 - Math.cos(u) / 2)) * Math.sin(u) * Math.cos(v);
+      } else {
+        target.x = 3 * Math.cos(u) * (1 + Math.sin(u)) + (2 * (1 - Math.cos(u) / 2)) * Math.cos(v + Math.PI);
+        target.y = 8 * Math.sin(u);
+      }
+      target.z = (2 * (1 - Math.cos(u) / 2)) * Math.sin(v);
+    }
+
+    // Build a BufferGeometry for the Klein bottle.
+    function createKleinGeometry(slices, stacks) {
+      slices = slices || 100;
+      stacks = stacks || 50;
+      const vertices = [];
+      const uvs = [];
+      const indices = [];
+      for (let j = 0; j <= stacks; j++) {
+        for (let i = 0; i <= slices; i++) {
+          const u = i / slices;
+          const v = j / stacks;
+          const vertex = new THREE.Vector3();
+          klein(u, v, vertex);
+          vertices.push(vertex.x, vertex.y, vertex.z);
+          uvs.push(u, v);
+        }
+      }
+      for (let j = 0; j < stacks; j++) {
+        for (let i = 0; i < slices; i++) {
+          const a = i + (slices + 1) * j;
+          const b = i + (slices + 1) * (j + 1);
+          const c = (i + 1) + (slices + 1) * (j + 1);
+          const d = (i + 1) + (slices + 1) * j;
+          indices.push(a, b, d);
+          indices.push(b, c, d);
+        }
+      }
+      const geometry = new THREE.BufferGeometry();
+      geometry.setIndex(indices);
+      geometry.setAttribute("position", new THREE.Float32BufferAttribute(vertices, 3));
+      geometry.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
+      geometry.computeVertexNormals();
+      return geometry;
+    }
+
+    const kleinGeometry = createKleinGeometry(200, 40);
+
+    /********************************************************************
+     * THREE.JS SCENE SETUP
+     ********************************************************************/
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(
+      45,
+      window.innerWidth / window.innerHeight,
+      0.1,
+      1000
+    );
+    camera.position.set(0, 0, 20);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    document.body.appendChild(renderer.domElement);
+
+    // Create a texture from the simulation canvas.
+    const texture = new THREE.CanvasTexture(simCanvas);
+    texture.minFilter = THREE.LinearFilter;
+
+    // Create a material that uses the simulation texture.
+    // Set transparent to true so that per‑pixel alpha is respected.
+    const kleinMaterial = new THREE.MeshBasicMaterial({
+      map: texture,
+      side: THREE.DoubleSide,
+      transparent: true
+    });
+
+    // Create the Klein bottle mesh and add it to the scene.
+    const kleinMesh = new THREE.Mesh(kleinGeometry, kleinMaterial);
+    scene.add(kleinMesh);
+
+    /********************************************************************
+     * SIMULATION DRAWING WITH DEPTH-BASED TRANSPARENCY
+     *
+     * For each live cell, we:
+     *   - Compute its (u,v) coordinates (the center of the cell).
+     *   - Use the Klein bottle parametric function to compute the corresponding
+     *     3D point on the surface.
+     *   - Compute a “depth” value relative to the camera’s view along the z‑axis.
+     *     (Since the camera is at z=20 and looks toward the origin, we define:
+     *         depth = camera.position.z - cellPoint.z )
+     *   - Map the depth to an alpha value: cells closest (smallest depth)
+     *     are fully opaque (alpha = 1) and those furthest away (largest depth)
+     *     are rendered at 20% opacity.
+     ********************************************************************/
+    // We assume, based on our Klein bottle parameterization, that cellPoint.z ranges roughly between -3 and 3.
+    // With camera.position.z = 20, we define:
+    const minDepth = 20 - 3;  // 17 (closest possible)
+    const maxDepth = 20 - (-3); // 23 (furthest possible)
+
+    // Temporary vector to hold the computed 3D coordinate.
+    const tempVec = new THREE.Vector3();
+
+    // Draw the current simulation state onto the off‑screen canvas.
+    function drawSimulation() {
+      // Clear the canvas.
+      simCtx.fillStyle = "black";
+      simCtx.fillRect(0, 0, canvasWidth, canvasHeight);
+
+      // Loop through each cell.
+      for (let r = 0; r < gridHeight; r++) {
+        for (let c = 0; c < gridWidth; c++) {
+          if (grid[r][c] !== null) {
+            // Compute the cell's UV center.
+            const u = (c + 0.5) / gridWidth;
+            const v = (r + 0.5) / gridHeight;
+            // Get the corresponding 3D point on the Klein bottle.
+            klein(u, v, tempVec);
+            // Compute depth relative to camera (using z-axis).
+            const depth = camera.position.z - tempVec.z;
+            // Map depth to alpha: closer (depth = minDepth) => alpha=1; further (depth = maxDepth) => alpha=0.2.
+            let alpha = 0.2 + 0.8 * ((maxDepth - depth) / (maxDepth - minDepth));
+            alpha = Math.max(0.2, Math.min(alpha, 1));
+
+            // Convert the cell's color from hex to RGB.
+            const { r: red, g: green, b: blue } = hexToRgb(grid[r][c]);
+            // Set the fill style using the computed alpha.
+            simCtx.fillStyle = `rgba(${red}, ${green}, ${blue}, ${alpha.toFixed(2)})`;
+            // Draw the 2x2 square for this cell.
+            simCtx.fillRect(c * cellSize, r * cellSize, cellSize, cellSize);
+          }
+        }
+      }
+    }
+
+    /********************************************************************
+     * ANIMATION LOOP
+     ********************************************************************/
+    function animate() {
+      requestAnimationFrame(animate);
+      // Slowly rotate the Klein bottle.
+      kleinMesh.rotation.x += 0.005;
+      kleinMesh.rotation.y += 0.01;
+      // Update the simulation texture.
+      texture.needsUpdate = true;
+      renderer.render(scene, camera);
+    }
+    animate();
+
+    // Update the Game of Life simulation every 100 ms.
+    setInterval(() => {
+      updateSimulation();
+      drawSimulation();
+    }, 100);
+
+    // Handle window resizing.
+    window.addEventListener("resize", () => {
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+    });
+  </script>
+</body>
+</html>
